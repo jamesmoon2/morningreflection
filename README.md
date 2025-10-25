@@ -14,6 +14,8 @@ An automated service that delivers daily stoic philosophical reflections via ema
 - **Classical Sources**: Quotes from Marcus Aurelius, Epictetus, Seneca, and Musonius Rufus
 - **No Repeats**: Intelligent tracking prevents quote repetition within 365 days
 - **Beautiful HTML**: Responsive email formatting optimized for all devices
+- **Self-Service Subscription**: Users can subscribe and unsubscribe via web forms
+- **Email Management**: Unsubscribe link in every email for easy opt-out
 - **Cost-Effective**: Runs for ~$0.18/month
 
 ## Architecture
@@ -21,41 +23,57 @@ An automated service that delivers daily stoic philosophical reflections via ema
 ```
 AWS Cloud
 ├── EventBridge (Daily 6 AM PT trigger)
-├── Lambda (Python 3.12)
-│   ├── Generate reflection via Anthropic API
-│   ├── Track quote history in S3
-│   └── Send formatted emails via SES
+├── Lambda Functions
+│   ├── Daily Sender: Generate & send reflections
+│   └── Subscription Handler: Manage subscriptions
+├── DynamoDB (Subscriber management)
+│   └── StoicSubscribers table
+├── API Gateway (Subscription API)
+│   ├── POST /api/subscribe
+│   ├── GET /api/confirm
+│   └── GET/POST /api/unsubscribe
 ├── S3 (State management)
 │   ├── quote_history.json
-│   └── recipients.json
+│   └── Static website (subscription forms)
 └── SES (Email delivery from jamescmooney.com)
 ```
 
 ## Tech Stack
 
-- **Infrastructure**: AWS (Lambda, EventBridge, SES, S3)
+- **Infrastructure**: AWS (Lambda, EventBridge, SES, S3, DynamoDB, API Gateway)
 - **IaC**: AWS CDK with Python
 - **Runtime**: Python 3.12
 - **AI Model**: Anthropic Claude Sonnet 4.5
 - **Email**: HTML via Amazon SES
+- **Database**: DynamoDB for subscriber management
 
 ## Project Structure
 
 ```
 daily-stoic-reflection/
-├── lambda/              # Lambda function code
-│   ├── handler.py       # Main entry point
+├── lambda/                    # Lambda function code
+│   ├── handler.py             # Daily sender entry point
+│   ├── subscription_handler.py # Subscription API handler
+│   ├── subscriber_manager.py  # DynamoDB operations
+│   ├── token_manager.py       # Token generation/validation
 │   ├── anthropic_client.py
 │   ├── email_formatter.py
 │   ├── quote_tracker.py
 │   └── themes.py
-├── infra/              # AWS CDK infrastructure
+├── infra/                     # AWS CDK infrastructure
 │   └── stoic_stack.py
-├── config/             # Configuration files
+├── website/                   # Subscription web forms
+│   ├── subscribe.html
+│   ├── confirm.html
+│   ├── css/
+│   └── js/
+├── scripts/                   # Utility scripts
+│   └── migrate_subscribers.py
+├── config/                    # Configuration files
 │   ├── recipients.json
 │   └── quote_history.json
-├── tests/              # Unit tests
-└── app.py              # CDK app entry point
+├── tests/                     # Unit tests
+└── app.py                     # CDK app entry point
 ```
 
 ## Setup
@@ -95,16 +113,32 @@ cdk deploy
 11. **November**: Gratitude and Contentment
 12. **December**: Reflection and Legacy
 
-## Maintenance
+## Subscription Management
+
+### For Users
+
+**Subscribe:**
+Visit `https://jamescmooney.com/subscribe.html` to sign up for daily reflections.
+
+**Unsubscribe:**
+Click the unsubscribe link at the bottom of any email.
+
+### For Administrators
 
 See [MAINTENANCE.md](MAINTENANCE.md) for ongoing maintenance instructions.
 
-### Adding Recipients
-
+**View Subscribers:**
 ```bash
-# Edit config/recipients.json
-# Upload to S3
-aws s3 cp config/recipients.json s3://YOUR-BUCKET/recipients.json
+aws dynamodb scan --table-name StoicSubscribers \
+  --filter-expression "#status = :active" \
+  --expression-attribute-names '{"#status": "status"}' \
+  --expression-attribute-values '{":active": {"S": "active"}}'
+```
+
+**Manual Add:**
+```bash
+# Use the migration script
+python scripts/migrate_subscribers.py --table StoicSubscribers
 ```
 
 ## Cost Breakdown
@@ -122,8 +156,11 @@ aws s3 cp config/recipients.json s3://YOUR-BUCKET/recipients.json
 
 - [prd.md](prd.md) - Complete Product Requirements Document
 - [projectplan.md](projectplan.md) - Implementation Project Plan
-- [DEPLOYMENT.md](DEPLOYMENT.md) - Deployment Guide
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Initial Deployment Guide
 - [MAINTENANCE.md](MAINTENANCE.md) - Maintenance Guide
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Detailed System Architecture
+- [SUBSCRIPTION_FEATURE.md](SUBSCRIPTION_FEATURE.md) - Subscription Feature Design
+- [SUBSCRIPTION_DEPLOYMENT.md](SUBSCRIPTION_DEPLOYMENT.md) - Subscription Deployment Guide
 
 ## License
 

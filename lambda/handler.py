@@ -23,6 +23,8 @@ from email_formatter import (
     validate_email_content
 )
 from anthropic_client import generate_reflection
+from subscriber_manager import SubscriberManager
+from token_manager import generate_unsubscribe_token
 
 # Configure logging
 logger = logging.getLogger()
@@ -49,15 +51,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         # 1. Get environment variables
         bucket_name = os.environ.get('BUCKET_NAME')
+        table_name = os.environ.get('TABLE_NAME')
         sender_email = os.environ.get('SENDER_EMAIL')
         anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
         aws_region = os.environ.get('AWS_REGION', 'us-west-2')
+        api_url = os.environ.get('API_URL', '')  # API Gateway URL for unsubscribe
 
         # Validate environment variables
         if not all([bucket_name, sender_email, anthropic_api_key]):
             raise ValueError("Missing required environment variables")
 
         logger.info(f"Using bucket: {bucket_name}")
+        logger.info(f"Using table: {table_name}")
         logger.info(f"Sender email: {sender_email}")
 
         # 2. Determine current date, month, and theme
@@ -80,9 +85,16 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         used_quotes = tracker.get_used_quotes(history, days=365)
         logger.info(f"Excluding {len(used_quotes)} recently used quotes")
 
-        # 4. Load recipient config from S3
-        recipients = load_recipients_from_s3(bucket_name)
-        logger.info(f"Found {len(recipients)} recipients")
+        # 4. Load active subscribers from DynamoDB (or fallback to S3)
+        if table_name:
+            # Use DynamoDB for subscriber management
+            subscriber_mgr = SubscriberManager(table_name)
+            recipients = subscriber_mgr.get_active_subscribers()
+            logger.info(f"Found {len(recipients)} active subscribers from DynamoDB")
+        else:
+            # Fallback to S3 recipients.json (backward compatibility)
+            recipients = load_recipients_from_s3(bucket_name)
+            logger.info(f"Found {len(recipients)} recipients from S3")
 
         if not recipients:
             raise ValueError("No recipients configured")
@@ -120,8 +132,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(f"History updated. Total quotes: {tracker.get_quote_count(history)}")
 
         # 7. Format and send email
-        html_content = format_html_email(quote, attribution, reflection, theme_name)
-        plain_text = format_plain_text_email(quote, attribution, reflection)
         subject = create_email_subject(theme_name)
 
         logger.info("Sending emails...")
@@ -130,6 +140,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         for recipient in recipients:
             try:
+                # Generate unsubscribe link for this recipient
+                unsubscribe_token = generate_unsubscribe_token(recipient)
+                unsubscribe_url = f"{api_url}/api/unsubscribe?email={recipient}&token={unsubscribe_token}" if api_url else None
+
+                # Format email with unsubscribe link
+                html_content = format_html_email(
+                    quote, attribution, reflection, theme_name, unsubscribe_url
+                )
+                plain_text = format_plain_text_email(
+                    quote, attribution, reflection, unsubscribe_url
+                )
+
                 send_email_via_ses(
                     sender=sender_email,
                     recipient=recipient,

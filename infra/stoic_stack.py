@@ -14,6 +14,8 @@ from aws_cdk import (
     aws_events_targets as targets,
     aws_iam as iam,
     aws_logs as logs,
+    aws_dynamodb as dynamodb,
+    aws_apigateway as apigw,
     CfnOutput
 )
 from constructs import Construct
@@ -28,9 +30,34 @@ class StoicStack(Stack):
         # Get context values from cdk.json
         anthropic_api_key = self.node.try_get_context("anthropic_api_key")
         sender_email = self.node.try_get_context("sender_email")
+        website_url = self.node.try_get_context("website_url") or "https://jamescmooney.com"
 
         if not anthropic_api_key or anthropic_api_key == "REPLACE_WITH_YOUR_ANTHROPIC_API_KEY":
             print("WARNING: ANTHROPIC_API_KEY not set in cdk.json context")
+
+        # ===== DynamoDB Table for Subscribers =====
+        subscribers_table = dynamodb.Table(
+            self, "SubscribersTable",
+            table_name="StoicSubscribers",
+            partition_key=dynamodb.Attribute(
+                name="email",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # On-demand pricing
+            removal_policy=RemovalPolicy.RETAIN,  # Keep table if stack is deleted
+            point_in_time_recovery=True,  # Enable backups
+            encryption=dynamodb.TableEncryption.AWS_MANAGED
+        )
+
+        # Add GSI for querying by status
+        subscribers_table.add_global_secondary_index(
+            index_name="StatusIndex",
+            partition_key=dynamodb.Attribute(
+                name="status",
+                type=dynamodb.AttributeType.STRING
+            ),
+            projection_type=dynamodb.ProjectionType.ALL
+        )
 
         # ===== S3 Bucket for State Management =====
         bucket = s3.Bucket(
@@ -43,7 +70,7 @@ class StoicStack(Stack):
             auto_delete_objects=False  # Don't auto-delete on stack deletion
         )
 
-        # ===== Lambda Function =====
+        # ===== Daily Sender Lambda Function =====
         lambda_fn = lambda_.Function(
             self, "DailyStoicSender",
             function_name="DailyStoicSender",
@@ -54,6 +81,7 @@ class StoicStack(Stack):
             memory_size=256,
             environment={
                 "BUCKET_NAME": bucket.bucket_name,
+                "TABLE_NAME": subscribers_table.table_name,
                 "SENDER_EMAIL": sender_email or "reflections@jamescmooney.com",
                 "ANTHROPIC_API_KEY": anthropic_api_key or "MISSING_API_KEY",
             },
@@ -63,6 +91,9 @@ class StoicStack(Stack):
 
         # Grant Lambda permissions to read/write S3 bucket
         bucket.grant_read_write(lambda_fn)
+
+        # Grant Lambda permissions to read from DynamoDB
+        subscribers_table.grant_read_data(lambda_fn)
 
         # Grant Lambda permissions to send emails via SES
         lambda_fn.add_to_role_policy(
@@ -75,6 +106,70 @@ class StoicStack(Stack):
                 resources=["*"]  # SES doesn't support resource-level permissions for these actions
             )
         )
+
+        # ===== Subscription Management Lambda =====
+        subscription_lambda = lambda_.Function(
+            self, "SubscriptionHandler",
+            function_name="StoicSubscriptionHandler",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="subscription_handler.lambda_handler",
+            code=lambda_.Code.from_asset("lambda"),
+            timeout=Duration.seconds(30),
+            memory_size=256,
+            environment={
+                "TABLE_NAME": subscribers_table.table_name,
+                "SENDER_EMAIL": sender_email or "reflections@jamescmooney.com",
+                "WEBSITE_URL": website_url,
+            },
+            log_retention=logs.RetentionDays.ONE_WEEK,
+            description="Handles subscription and unsubscribe requests"
+        )
+
+        # Grant subscription Lambda full access to DynamoDB table
+        subscribers_table.grant_read_write_data(subscription_lambda)
+
+        # Grant subscription Lambda permissions to send emails via SES
+        subscription_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "ses:SendEmail",
+                    "ses:SendRawEmail"
+                ],
+                resources=["*"]
+            )
+        )
+
+        # ===== API Gateway =====
+        api = apigw.RestApi(
+            self, "SubscriptionApi",
+            rest_api_name="Stoic Subscription API",
+            description="API for managing Daily Stoic Reflection subscriptions",
+            default_cors_preflight_options=apigw.CorsOptions(
+                allow_origins=["*"],  # In production, restrict to your domain
+                allow_methods=["GET", "POST", "OPTIONS"],
+                allow_headers=["Content-Type", "Authorization"]
+            )
+        )
+
+        # API resource: /api
+        api_resource = api.root.add_resource("api")
+
+        # POST /api/subscribe
+        subscribe_resource = api_resource.add_resource("subscribe")
+        subscribe_integration = apigw.LambdaIntegration(subscription_lambda)
+        subscribe_resource.add_method("POST", subscribe_integration)
+
+        # GET /api/confirm
+        confirm_resource = api_resource.add_resource("confirm")
+        confirm_integration = apigw.LambdaIntegration(subscription_lambda)
+        confirm_resource.add_method("GET", confirm_integration)
+
+        # GET/POST /api/unsubscribe
+        unsubscribe_resource = api_resource.add_resource("unsubscribe")
+        unsubscribe_integration = apigw.LambdaIntegration(subscription_lambda)
+        unsubscribe_resource.add_method("GET", unsubscribe_integration)
+        unsubscribe_resource.add_method("POST", unsubscribe_integration)
 
         # ===== EventBridge Rule (Daily Trigger) =====
         # Schedule: 6 AM Pacific Time
@@ -109,17 +204,38 @@ class StoicStack(Stack):
         )
 
         CfnOutput(
+            self, "TableName",
+            value=subscribers_table.table_name,
+            description="DynamoDB table name for subscribers",
+            export_name=f"{self.stack_name}-TableName"
+        )
+
+        CfnOutput(
             self, "LambdaFunctionName",
             value=lambda_fn.function_name,
-            description="Lambda function name",
+            description="Daily sender Lambda function name",
             export_name=f"{self.stack_name}-LambdaFunctionName"
         )
 
         CfnOutput(
-            self, "LambdaFunctionArn",
-            value=lambda_fn.function_arn,
-            description="Lambda function ARN",
-            export_name=f"{self.stack_name}-LambdaFunctionArn"
+            self, "SubscriptionLambdaName",
+            value=subscription_lambda.function_name,
+            description="Subscription handler Lambda function name",
+            export_name=f"{self.stack_name}-SubscriptionLambdaName"
+        )
+
+        CfnOutput(
+            self, "ApiUrl",
+            value=api.url,
+            description="API Gateway URL",
+            export_name=f"{self.stack_name}-ApiUrl"
+        )
+
+        CfnOutput(
+            self, "ApiEndpoint",
+            value=f"{api.url}api/",
+            description="API endpoint base URL",
+            export_name=f"{self.stack_name}-ApiEndpoint"
         )
 
         CfnOutput(
@@ -131,5 +247,8 @@ class StoicStack(Stack):
 
         # Store references for potential use
         self.bucket = bucket
+        self.subscribers_table = subscribers_table
         self.lambda_function = lambda_fn
+        self.subscription_lambda = subscription_lambda
+        self.api = api
         self.event_rule = rule

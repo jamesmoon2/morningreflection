@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Confirming Subscription...</title>
+    <link rel="stylesheet" href="css/subscription.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Daily Stoic Reflections</h1>
+        </div>
+
+        <div class="content">
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <p>Confirming your subscription...</p>
+            </div>
+
+            <div id="result" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="footer">
+            <p>Daily Stoic Reflection • Powered by Claude</p>
+        </div>
+    </div>
+
+    <script>
+        // Get API URL from environment or default
+        const API_URL = 'API_GATEWAY_URL_HERE'; // Replace during deployment
+
+        // Get token from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const token = urlParams.get('token');
+
+        const loadingDiv = document.getElementById('loading');
+        const resultDiv = document.getElementById('result');
+
+        if (!token) {
+            loadingDiv.style.display = 'none';
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'result error';
+            resultDiv.innerHTML = `
+                <div class="icon">⚠</div>
+                <h2>Invalid Link</h2>
+                <p>No confirmation token provided. Please use the link from your confirmation email.</p>
+                <a href="subscribe.html" class="btn">Try Subscribing Again</a>
+            `;
+        } else {
+            // Call API to confirm
+            fetch(`${API_URL}/api/confirm?token=${encodeURIComponent(token)}`)
+                .then(response => {
+                    if (response.ok) {
+                        return response.text();
+                    }
+                    throw new Error('Confirmation failed');
+                })
+                .then(html => {
+                    loadingDiv.style.display = 'none';
+                    resultDiv.style.display = 'block';
+                    resultDiv.className = 'result success';
+                    resultDiv.innerHTML = `
+                        <div class="icon">✓</div>
+                        <h2>Successfully Subscribed!</h2>
+                        <p>You will receive your first Daily Stoic Reflection tomorrow morning at 6 AM PT.</p>
+                        <p class="small">Welcome to the journey of daily stoic wisdom.</p>
+                    `;
+                })
+                .catch(error => {
+                    loadingDiv.style.display = 'none';
+                    resultDiv.style.display = 'block';
+                    resultDiv.className = 'result error';
+                    resultDiv.innerHTML = `
+                        <div class="icon">⚠</div>
+                        <h2>Confirmation Failed</h2>
+                        <p>This link may be invalid or expired. Please try subscribing again.</p>
+                        <a href="subscribe.html" class="btn">Subscribe Again</a>
+                    `;
+                });
+        }
+    </script>
+</body>
+</html>

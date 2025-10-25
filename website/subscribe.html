@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subscribe - Daily Stoic Reflections</title>
+    <link rel="stylesheet" href="css/subscription.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Daily Stoic Reflections</h1>
+            <p class="subtitle">Timeless wisdom for modern life</p>
+        </div>
+
+        <div class="content">
+            <h2>Subscribe for Daily Wisdom</h2>
+            <p>Receive a thoughtful stoic reflection every morning at 6 AM PT. Each day brings a new quote from classical stoic philosophers paired with original insights to guide your day.</p>
+
+            <div class="features">
+                <div class="feature">
+                    <span class="icon">📖</span>
+                    <h3>Classical Sources</h3>
+                    <p>Quotes from Marcus Aurelius, Epictetus, Seneca, and Musonius Rufus</p>
+                </div>
+                <div class="feature">
+                    <span class="icon">🎨</span>
+                    <h3>Original Reflections</h3>
+                    <p>Fresh insights generated daily by Claude AI</p>
+                </div>
+                <div class="feature">
+                    <span class="icon">📅</span>
+                    <h3>Monthly Themes</h3>
+                    <p>12 distinct themes throughout the year for focused growth</p>
+                </div>
+            </div>
+
+            <form id="subscribeForm" class="subscribe-form">
+                <div class="form-group">
+                    <label for="email">Email Address</label>
+                    <input
+                        type="email"
+                        id="email"
+                        name="email"
+                        required
+                        placeholder="your@email.com"
+                        autocomplete="email"
+                    >
+                </div>
+
+                <!-- Honeypot field (anti-bot) -->
+                <input type="text" name="website" id="website" style="display: none;" tabindex="-1" autocomplete="off">
+
+                <button type="submit" id="submitBtn" class="submit-btn">
+                    Subscribe
+                </button>
+            </form>
+
+            <div id="message" class="message"></div>
+
+            <div class="privacy-note">
+                <p>🔒 Your email will only be used for daily reflections. Unsubscribe anytime with one click. No spam, ever.</p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Daily Stoic Reflection • Powered by Claude</p>
+        </div>
+    </div>
+
+    <script src="js/subscription.js"></script>
+</body>
+</html>

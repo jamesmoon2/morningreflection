@@ -8,7 +8,13 @@ import html
 from typing import Dict
 
 
-def format_html_email(quote: str, attribution: str, reflection: str, theme: str) -> str:
+def format_html_email(
+    quote: str,
+    attribution: str,
+    reflection: str,
+    theme: str,
+    unsubscribe_url: str = None
+) -> str:
     """
     Format the daily reflection as an HTML email.
 
@@ -17,6 +23,7 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
         attribution: Quote attribution (e.g., "Marcus Aurelius - Meditations 4.3")
         reflection: The reflection text (250-450 words)
         theme: Monthly theme name
+        unsubscribe_url: URL for unsubscribe link (optional)
 
     Returns:
         Complete HTML email as a string
@@ -119,6 +126,7 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
 
         <div class="footer">
             Daily Stoic Reflection • Powered by Claude
+            {_format_unsubscribe_link(unsubscribe_url)}
         </div>
     </div>
 </body>
@@ -127,7 +135,30 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
     return html_template
 
 
-def format_plain_text_email(quote: str, attribution: str, reflection: str) -> str:
+def _format_unsubscribe_link(unsubscribe_url: str = None) -> str:
+    """
+    Format the unsubscribe link for email footer.
+
+    Args:
+        unsubscribe_url: URL for unsubscribe link
+
+    Returns:
+        HTML for unsubscribe link or empty string
+    """
+    if unsubscribe_url:
+        return f'''<br><br>
+            <a href="{html.escape(unsubscribe_url)}" style="color: #95a5a6; font-size: 11px; text-decoration: underline;">
+                Unsubscribe from these emails
+            </a>'''
+    return ""
+
+
+def format_plain_text_email(
+    quote: str,
+    attribution: str,
+    reflection: str,
+    unsubscribe_url: str = None
+) -> str:
     """
     Format the daily reflection as plain text email (fallback).
 
@@ -135,11 +166,16 @@ def format_plain_text_email(quote: str, attribution: str, reflection: str) -> st
         quote: The stoic quote text
         attribution: Quote attribution
         reflection: The reflection text
+        unsubscribe_url: URL for unsubscribe link (optional)
 
     Returns:
         Plain text email as a string
     """
     divider = "=" * 70
+
+    unsubscribe_text = ""
+    if unsubscribe_url:
+        unsubscribe_text = f"\n\nTo unsubscribe: {unsubscribe_url}"
 
     plain_text = f"""
 {divider}
@@ -155,7 +191,7 @@ DAILY STOIC REFLECTION
 {reflection}
 
 {divider}
-Daily Stoic Reflection • Powered by Claude
+Daily Stoic Reflection • Powered by Claude{unsubscribe_text}
 """
 
     return plain_text.strip()
