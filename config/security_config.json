@@ -1,0 +1,112 @@
+{
+  "content_limits": {
+    "max_reflection_length_chars": 10000,
+    "max_reflection_length_words": 2000,
+    "min_reflection_length_chars": 100,
+    "min_reflection_length_words": 50,
+    "max_quote_length": 2000,
+    "max_attribution_length": 500
+  },
+  "malicious_patterns": {
+    "enabled": true,
+    "patterns": [
+      "(?i)<script[^>]*>",
+      "(?i)javascript:",
+      "(?i)on(?:load|error|click|mouse|key)\\s*=",
+      "(?i)data:text/html",
+      "(?i)<iframe",
+      "(?i)<embed",
+      "(?i)<object",
+      "(?i)eval\\s*\\(",
+      "(?i)expression\\s*\\(",
+      "(?i)<meta[^>]+http-equiv",
+      "(?i)vbscript:",
+      "(?i)<link[^>]+stylesheet",
+      "(?i)<base[^>]+href"
+    ],
+    "suspicious_patterns": [
+      "(?i)\\[INST\\]",
+      "(?i)\\[/INST\\]",
+      "(?i)<\\|im_start\\|>",
+      "(?i)<\\|im_end\\|>",
+      "(?i)###\\s*(?:Human|Assistant|System):",
+      "(?i)IGNORE PREVIOUS INSTRUCTIONS",
+      "(?i)SYSTEM PROMPT",
+      "(?i)You are now"
+    ]
+  },
+  "url_detection": {
+    "enabled": true,
+    "max_urls_allowed": 0,
+    "block_all_urls": true,
+    "allow_https_only": false,
+    "url_pattern": "(?:https?://|www\\.)\\S+",
+    "suspicious_domains": [
+      "bit.ly",
+      "tinyurl.com",
+      "goo.gl",
+      "t.co",
+      "ow.ly",
+      "is.gd"
+    ]
+  },
+  "character_validation": {
+    "enabled": true,
+    "allow_unicode": true,
+    "block_control_chars": true,
+    "max_consecutive_same_char": 50,
+    "allowed_special_chars": ".,!?;:\"'()-—–\n\r ",
+    "block_homoglyphs": true
+  },
+  "content_policy": {
+    "enabled": true,
+    "forbidden_topics": [
+      "medical advice",
+      "financial advice",
+      "legal advice",
+      "political propaganda",
+      "cryptocurrency promotion",
+      "get rich quick"
+    ],
+    "required_elements": {
+      "check_formatting": true,
+      "check_paragraph_structure": true,
+      "min_paragraphs": 1,
+      "max_paragraphs": 10
+    }
+  },
+  "anomaly_detection": {
+    "enabled": true,
+    "track_response_statistics": true,
+    "alert_on_anomaly": true,
+    "deviation_threshold_sigma": 3.0,
+    "min_samples_for_detection": 10
+  },
+  "alerting": {
+    "enabled": true,
+    "alert_on_blocked_content": true,
+    "alert_on_suspicious_content": true,
+    "alert_on_validation_failure": false,
+    "alert_on_anomaly": true,
+    "severity_levels": {
+      "blocked_content": "CRITICAL",
+      "suspicious_patterns": "WARNING",
+      "validation_failure": "INFO",
+      "anomaly_detected": "WARNING"
+    }
+  },
+  "sanitization": {
+    "enabled": true,
+    "html_escape_all": true,
+    "remove_control_chars": true,
+    "normalize_whitespace": true,
+    "strip_invisible_chars": true,
+    "max_consecutive_newlines": 3
+  },
+  "fail_safe": {
+    "enabled": true,
+    "use_fallback_on_security_failure": false,
+    "reject_on_security_failure": true,
+    "log_rejected_content": true
+  }
+}

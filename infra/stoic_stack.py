@@ -14,6 +14,8 @@ from aws_cdk import (
     aws_events_targets as targets,
     aws_iam as iam,
     aws_logs as logs,
+    aws_sns as sns,
+    aws_sns_subscriptions as subscriptions,
     CfnOutput
 )
 from constructs import Construct
@@ -43,6 +45,21 @@ class StoicStack(Stack):
             auto_delete_objects=False  # Don't auto-delete on stack deletion
         )
 
+        # ===== SNS Topic for Security Alerts =====
+        security_topic = sns.Topic(
+            self, "SecurityAlertTopic",
+            topic_name="StoicReflections-SecurityAlerts",
+            display_name="Stoic Reflections Security Alerts",
+            fifo=False
+        )
+
+        # Get security alert email from context (optional)
+        security_email = self.node.try_get_context("security_alert_email")
+        if security_email:
+            security_topic.add_subscription(
+                subscriptions.EmailSubscription(security_email)
+            )
+
         # ===== Lambda Function =====
         lambda_fn = lambda_.Function(
             self, "DailyStoicSender",
@@ -56,6 +73,7 @@ class StoicStack(Stack):
                 "BUCKET_NAME": bucket.bucket_name,
                 "SENDER_EMAIL": sender_email or "reflections@jamescmooney.com",
                 "ANTHROPIC_API_KEY": anthropic_api_key or "MISSING_API_KEY",
+                "SECURITY_ALERT_TOPIC_ARN": security_topic.topic_arn,
             },
             log_retention=logs.RetentionDays.ONE_WEEK,
             description="Generates and sends daily stoic reflections via email"
@@ -73,6 +91,20 @@ class StoicStack(Stack):
                     "ses:SendRawEmail"
                 ],
                 resources=["*"]  # SES doesn't support resource-level permissions for these actions
+            )
+        )
+
+        # Grant Lambda permissions to publish to SNS topic for security alerts
+        security_topic.grant_publish(lambda_fn)
+
+        # Grant Lambda permissions to publish CloudWatch metrics
+        lambda_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "cloudwatch:PutMetricData"
+                ],
+                resources=["*"]  # CloudWatch metrics don't support resource-level permissions
             )
         )
 
@@ -129,7 +161,21 @@ class StoicStack(Stack):
             export_name=f"{self.stack_name}-EventRuleName"
         )
 
+        CfnOutput(
+            self, "SecurityAlertTopicArn",
+            value=security_topic.topic_arn,
+            description="SNS topic ARN for security alerts",
+            export_name=f"{self.stack_name}-SecurityAlertTopicArn"
+        )
+
+        CfnOutput(
+            self, "SecurityAlertTopicName",
+            value=security_topic.topic_name,
+            description="SNS topic name for security alerts"
+        )
+
         # Store references for potential use
         self.bucket = bucket
         self.lambda_function = lambda_fn
         self.event_rule = rule
+        self.security_topic = security_topic
