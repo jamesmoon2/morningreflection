@@ -518,19 +518,30 @@ curl -X GET "$API_URL/journal/list?limit=10" \
 
 ## Testing & Verification
 
-### Unit Tests (TODO)
+### Unit Tests ✅ COMPLETE
 
-Phase 2 Lambda functions should have unit tests:
+Phase 2 Lambda functions now have comprehensive unit tests:
 
 ```bash
-# Create test file
-touch tests/test_user_api.py
-touch tests/test_reflections_api.py
-touch tests/test_journal_api.py
+# Run all API endpoint tests
+pytest tests/lambda_api/test_user_api.py -v
+pytest tests/lambda_api/test_reflections_api.py -v
+pytest tests/lambda_api/test_journal_api.py -v
 
-# Run tests
-pytest tests/test_user_api.py -v
+# Run all backend tests
+pytest tests/ -v
+
+# Run with coverage
+pytest --cov=lambda --cov=lambda_api --cov-report=html
 ```
+
+**Test Coverage:**
+- `tests/lambda_api/test_user_api.py` - 14+ tests for user API endpoints
+- `tests/lambda_api/test_reflections_api.py` - 16+ tests for reflections API
+- `tests/lambda_api/test_journal_api.py` - 25+ tests for journal API
+- `tests/lambda_api/test_dynamodb_operations.py` - 15+ tests for DynamoDB CRUD
+- `tests/lambda_api/test_api_utils.py` - 15+ tests for API utilities
+- See pytest.ini for test organization and markers
 
 ### Integration Tests
 
