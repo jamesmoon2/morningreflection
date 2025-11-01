@@ -20,9 +20,16 @@ from aws_cdk import (
     aws_cognito as cognito,
     aws_dynamodb as dynamodb,
     aws_apigateway as apigateway,
+    aws_cloudwatch as cloudwatch,
+    aws_cloudwatch_actions as cw_actions,
     CfnOutput
 )
 from constructs import Construct
+try:
+    from aws_cdk import aws_amplify_alpha as amplify
+except ImportError:
+    amplify = None
+    print("WARNING: aws-cdk.aws-amplify-alpha not installed. Amplify hosting will be skipped.")
 
 
 class StoicStack(Stack):
@@ -495,6 +502,243 @@ class StoicStack(Stack):
             authorization_type=apigateway.AuthorizationType.COGNITO
         )
 
+        # ===== AWS Amplify Hosting (Frontend) =====
+        amplify_app = None
+        if amplify:
+            # Get context values for Amplify
+            github_token = self.node.try_get_context("github_token")
+            github_repo = self.node.try_get_context("github_repo")  # Format: "owner/repo"
+            github_branch = self.node.try_get_context("github_branch") or "main"
+
+            if github_token and github_repo:
+                amplify_app = amplify.App(
+                    self, "MorningReflectionApp",
+                    app_name="MorningReflection",
+                    source_code_provider=amplify.GitHubSourceCodeProvider(
+                        owner=github_repo.split("/")[0],
+                        repository=github_repo.split("/")[1],
+                        oauth_token=github_token
+                    ),
+                    build_spec=amplify.BuildSpec.from_object_to_yaml({
+                        "version": 1,
+                        "frontend": {
+                            "phases": {
+                                "preBuild": {
+                                    "commands": [
+                                        "cd frontend",
+                                        "npm ci"
+                                    ]
+                                },
+                                "build": {
+                                    "commands": [
+                                        "npm run build"
+                                    ]
+                                }
+                            },
+                            "artifacts": {
+                                "baseDirectory": "dist",
+                                "files": ["**/*"]
+                            },
+                            "cache": {
+                                "paths": ["node_modules/**/*"]
+                            }
+                        }
+                    }),
+                    environment_variables={
+                        "VITE_AWS_REGION": self.region,
+                        "VITE_USER_POOL_ID": user_pool.user_pool_id,
+                        "VITE_USER_POOL_CLIENT_ID": user_pool_client.user_pool_client_id,
+                        "VITE_API_URL": api.url,
+                        "VITE_APP_NAME": "Morning Reflection",
+                        "VITE_APP_URL": "https://app.morningreflection.com"
+                    },
+                    auto_branch_deletion=True
+                )
+
+                # Add main branch
+                main_branch = amplify_app.add_branch(
+                    github_branch,
+                    auto_build=True,
+                    stage=amplify.Stage.PRODUCTION
+                )
+
+                # Add custom domain (optional - requires domain to be available)
+                custom_domain = self.node.try_get_context("custom_domain")
+                if custom_domain:
+                    domain = amplify_app.add_domain(
+                        custom_domain,
+                        enable_auto_sub_domain=True
+                    )
+                    domain.map_root(main_branch)
+                    domain.map_sub_domain(main_branch, "www")
+            else:
+                print("INFO: Skipping Amplify hosting - github_token or github_repo not configured")
+                print("INFO: To enable Amplify, add to cdk.json context:")
+                print('      "github_token": "ghp_...",')
+                print('      "github_repo": "owner/repo",')
+                print('      "github_branch": "main"')
+
+        # ===== CloudWatch Dashboard =====
+        dashboard = cloudwatch.Dashboard(
+            self, "MorningReflectionDashboard",
+            dashboard_name="MorningReflection-Metrics"
+        )
+
+        # Lambda metrics
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="Daily Lambda - Invocations & Errors",
+                left=[
+                    lambda_fn.metric_invocations(statistic="Sum", period=Duration.minutes(5)),
+                    lambda_fn.metric_errors(statistic="Sum", period=Duration.minutes(5))
+                ],
+                width=12
+            ),
+            cloudwatch.GraphWidget(
+                title="Daily Lambda - Duration",
+                left=[
+                    lambda_fn.metric_duration(statistic="Average", period=Duration.minutes(5)),
+                    lambda_fn.metric_duration(statistic="Maximum", period=Duration.minutes(5))
+                ],
+                width=12
+            )
+        )
+
+        # API Gateway metrics
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="API Gateway - Requests & Errors",
+                left=[
+                    api.metric_count(statistic="Sum", period=Duration.minutes(5)),
+                    api.metric_client_error(statistic="Sum", period=Duration.minutes(5)),
+                    api.metric_server_error(statistic="Sum", period=Duration.minutes(5))
+                ],
+                width=12
+            ),
+            cloudwatch.GraphWidget(
+                title="API Gateway - Latency",
+                left=[
+                    api.metric_latency(statistic="Average", period=Duration.minutes(5)),
+                    api.metric_latency(statistic="p99", period=Duration.minutes(5))
+                ],
+                width=12
+            )
+        )
+
+        # DynamoDB metrics
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="DynamoDB - Users Table Capacity",
+                left=[
+                    users_table.metric_consumed_read_capacity_units(statistic="Sum", period=Duration.minutes(5)),
+                    users_table.metric_consumed_write_capacity_units(statistic="Sum", period=Duration.minutes(5))
+                ],
+                width=8
+            ),
+            cloudwatch.GraphWidget(
+                title="DynamoDB - Reflections Table Capacity",
+                left=[
+                    reflections_table.metric_consumed_read_capacity_units(statistic="Sum", period=Duration.minutes(5)),
+                    reflections_table.metric_consumed_write_capacity_units(statistic="Sum", period=Duration.minutes(5))
+                ],
+                width=8
+            ),
+            cloudwatch.GraphWidget(
+                title="DynamoDB - Journal Table Capacity",
+                left=[
+                    journal_table.metric_consumed_read_capacity_units(statistic="Sum", period=Duration.minutes(5)),
+                    journal_table.metric_consumed_write_capacity_units(statistic="Sum", period=Duration.minutes(5))
+                ],
+                width=8
+            )
+        )
+
+        # Cognito metrics (user pool activity)
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="Cognito - User Activity",
+                left=[
+                    cloudwatch.Metric(
+                        namespace="AWS/Cognito",
+                        metric_name="UserAuthentication",
+                        dimensions_map={"UserPool": user_pool.user_pool_id},
+                        statistic="Sum",
+                        period=Duration.hours(1)
+                    )
+                ],
+                width=12
+            )
+        )
+
+        # ===== CloudWatch Alarms =====
+        # Alarm topic (already created as security_topic, reuse it)
+        alarm_topic = security_topic
+
+        # Lambda error rate alarm
+        lambda_error_alarm = cloudwatch.Alarm(
+            self, "DailyLambdaErrorAlarm",
+            alarm_name="MorningReflection-DailyLambda-Errors",
+            alarm_description="Alert when daily Lambda function has errors",
+            metric=lambda_fn.metric_errors(statistic="Sum", period=Duration.minutes(5)),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING
+        )
+        lambda_error_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # Lambda throttle alarm
+        lambda_throttle_alarm = cloudwatch.Alarm(
+            self, "DailyLambdaThrottleAlarm",
+            alarm_name="MorningReflection-DailyLambda-Throttles",
+            alarm_description="Alert when daily Lambda function is throttled",
+            metric=lambda_fn.metric_throttles(statistic="Sum", period=Duration.minutes(5)),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING
+        )
+        lambda_throttle_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # API Gateway 5xx errors alarm
+        api_5xx_alarm = cloudwatch.Alarm(
+            self, "ApiGateway5xxAlarm",
+            alarm_name="MorningReflection-API-5xxErrors",
+            alarm_description="Alert when API Gateway has 5xx errors",
+            metric=api.metric_server_error(statistic="Sum", period=Duration.minutes(5)),
+            threshold=5,
+            evaluation_periods=2,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING
+        )
+        api_5xx_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # API Gateway high latency alarm
+        api_latency_alarm = cloudwatch.Alarm(
+            self, "ApiGatewayLatencyAlarm",
+            alarm_name="MorningReflection-API-HighLatency",
+            alarm_description="Alert when API Gateway latency is high",
+            metric=api.metric_latency(statistic="Average", period=Duration.minutes(5)),
+            threshold=2000,  # 2 seconds
+            evaluation_periods=3,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING
+        )
+        api_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # DynamoDB throttle alarms
+        users_table_throttle_alarm = cloudwatch.Alarm(
+            self, "UsersTableThrottleAlarm",
+            alarm_name="MorningReflection-UsersTable-Throttles",
+            alarm_description="Alert when Users table is throttled",
+            metric=users_table.metric_user_errors(statistic="Sum", period=Duration.minutes(5)),
+            threshold=5,
+            evaluation_periods=2,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING
+        )
+        users_table_throttle_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
         # ===== CloudFormation Outputs =====
         CfnOutput(
             self, "BucketName",
@@ -592,6 +836,28 @@ class StoicStack(Stack):
             self, "ApiId",
             value=api.rest_api_id,
             description="API Gateway REST API ID"
+        )
+
+        # Amplify outputs
+        if amplify_app:
+            CfnOutput(
+                self, "AmplifyAppId",
+                value=amplify_app.app_id,
+                description="Amplify App ID",
+                export_name=f"{self.stack_name}-AmplifyAppId"
+            )
+
+            CfnOutput(
+                self, "AmplifyDefaultDomain",
+                value=amplify_app.default_domain,
+                description="Amplify Default Domain (frontend URL)"
+            )
+
+        # Monitoring outputs
+        CfnOutput(
+            self, "DashboardUrl",
+            value=f"https://console.aws.amazon.com/cloudwatch/home?region={self.region}#dashboards:name={dashboard.dashboard_name}",
+            description="CloudWatch Dashboard URL"
         )
 
         # Store references for potential use
