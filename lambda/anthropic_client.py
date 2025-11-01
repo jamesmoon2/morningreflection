@@ -550,3 +550,102 @@ def generate_reflection_secure(
             'error': str(e),
             'correlation_id': security_logger.correlation_id
         }
+
+
+def build_journaling_prompt_request(reflection: str, quote: str, theme: str) -> str:
+    """
+    Build the prompt for Claude to generate a journaling prompt based on the reflection.
+
+    Args:
+        reflection: The generated reflection text
+        quote: The stoic quote
+        theme: Monthly theme
+
+    Returns:
+        Formatted prompt string
+    """
+    prompt = f"""You are a thoughtful journaling coach. Based on the following Stoic reflection, create a single, thought-provoking journaling prompt that helps the reader apply the wisdom to their own life.
+
+Reflection:
+{reflection}
+
+Quote: "{quote}"
+Theme: {theme}
+
+Generate a journaling prompt that:
+1. Connects to the reflection's core message
+2. Is personal and introspective
+3. Is actionable (encourages concrete reflection)
+4. Is 1-2 sentences long
+5. Uses "you" language to make it personal
+
+Return ONLY the journaling prompt text, no other commentary or formatting."""
+
+    return prompt
+
+
+def generate_journaling_prompt(
+    reflection: str,
+    quote: str,
+    theme: str,
+    api_key: str,
+    timeout: int = 15
+) -> Optional[str]:
+    """
+    Generate a journaling prompt based on the daily reflection.
+
+    This is the second Anthropic API call for dual-generation.
+
+    Args:
+        reflection: The generated reflection text
+        quote: The stoic quote
+        theme: Monthly theme
+        api_key: Anthropic API key
+        timeout: API call timeout in seconds (default: 15)
+
+    Returns:
+        The journaling prompt text, or None if generation fails
+    """
+    try:
+        logger.info("Generating journaling prompt (2nd Anthropic API call)")
+
+        # Build prompt
+        prompt = build_journaling_prompt_request(reflection, quote, theme)
+
+        # Call API with shorter token limit
+        client = Anthropic(api_key=api_key)
+
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=200,  # Shorter than reflection
+            temperature=0.8,  # Slightly less random
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            timeout=timeout
+        )
+
+        # Extract text from response
+        prompt_text = response.content[0].text.strip()
+
+        logger.info(f"Generated journaling prompt ({len(prompt_text)} chars)")
+
+        # Basic validation
+        if len(prompt_text) < 20:
+            logger.warning(f"Journaling prompt is very short: {len(prompt_text)} chars")
+            return None
+
+        if len(prompt_text) > 500:
+            logger.warning(f"Journaling prompt is very long: {len(prompt_text)} chars, truncating")
+            prompt_text = prompt_text[:500]
+
+        return prompt_text
+
+    except Exception as e:
+        logger.error(f"Error generating journaling prompt: {e}")
+        # Don't fail the entire reflection generation if prompt fails
+        return None
+

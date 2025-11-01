@@ -199,6 +199,9 @@ class StoicStack(Stack):
             "BUCKET_NAME": bucket.bucket_name,
             "SENDER_EMAIL": sender_email or "reflections@morningreflection.com",
             "SECURITY_ALERT_TOPIC_ARN": security_topic.topic_arn,
+            "DYNAMODB_USERS_TABLE": users_table.table_name,
+            "DYNAMODB_REFLECTIONS_TABLE": reflections_table.table_name,
+            "WEB_APP_URL": self.node.try_get_context("web_app_url") or "https://app.morningreflection.com",
         }
 
         # Add API key from Secrets Manager or context
@@ -222,6 +225,10 @@ class StoicStack(Stack):
 
         # Grant Lambda permissions to read/write S3 bucket
         bucket.grant_read_write(lambda_fn)
+
+        # Grant Lambda permissions to access DynamoDB tables
+        users_table.grant_read_data(lambda_fn)  # Read users for email delivery
+        reflections_table.grant_write_data(lambda_fn)  # Write reflections
 
         # Grant Lambda permissions to send emails via SES
         lambda_fn.add_to_role_policy(

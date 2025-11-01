@@ -23,7 +23,16 @@ from email_formatter import (
     create_email_subject,
     validate_email_content
 )
-from anthropic_client import generate_reflection_only, generate_reflection_secure
+from anthropic_client import (
+    generate_reflection_only,
+    generate_reflection_secure,
+    generate_journaling_prompt
+)
+from dynamodb_helper import (
+    save_reflection_to_dynamodb,
+    get_all_active_users,
+    generate_magic_link
+)
 
 # Configure logging
 logger = logging.getLogger()
@@ -133,12 +142,23 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Note: theme from quote_data matches the monthly theme
         logger.info(f"Loaded quote for {current_date_str}: {attribution}")
 
-        # 4. Load recipient config from S3
-        recipients = load_recipients_from_s3(bucket_name)
-        logger.info(f"Found {len(recipients)} recipients")
+        # 4. Get recipients from DynamoDB (active users with email enabled)
+        logger.info("Querying DynamoDB for active users...")
+        users = get_all_active_users()
 
-        if not recipients:
-            raise ValueError("No recipients configured")
+        if not users:
+            logger.warning("No active users found in DynamoDB. Checking S3 fallback...")
+            # Fallback to S3 recipients for backward compatibility (Phase 1 users)
+            try:
+                recipients_s3 = load_recipients_from_s3(bucket_name)
+                # Convert S3 recipients to user format
+                users = [{'email': r, 'user_id': f'legacy-{i}'} for i, r in enumerate(recipients_s3)]
+                logger.info(f"Loaded {len(users)} recipients from S3 fallback")
+            except Exception as e:
+                logger.error(f"No recipients found in DynamoDB or S3: {e}")
+                raise ValueError("No recipients configured")
+
+        logger.info(f"Found {len(users)} active users for email delivery")
 
         # 5. Generate reflection via Anthropic API with security controls
         logger.info("Generating reflection via Anthropic API (with security controls)...")
@@ -180,6 +200,41 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if not validation['is_valid']:
             logger.warning(f"Content validation issues: {validation}")
 
+        # 5.5. Generate journaling prompt (2nd Anthropic API call)
+        logger.info("Generating journaling prompt (2nd Anthropic API call)...")
+        journaling_prompt = generate_journaling_prompt(
+            reflection=reflection,
+            quote=quote,
+            theme=theme_name,
+            api_key=anthropic_api_key,
+            timeout=15
+        )
+
+        if journaling_prompt:
+            logger.info(f"Generated journaling prompt ({len(journaling_prompt)} chars)")
+        else:
+            logger.warning("Failed to generate journaling prompt. Continuing without it.")
+            journaling_prompt = "Reflect on how you can apply today's wisdom to your own life."
+
+        # 5.6. Save reflection and prompt to DynamoDB
+        logger.info("Saving reflection to DynamoDB...")
+        dynamodb_success = save_reflection_to_dynamodb(
+            date=current_date_str,
+            quote=quote,
+            attribution=attribution,
+            theme=theme_name,
+            reflection=reflection,
+            journaling_prompt=journaling_prompt,
+            model_version="claude-sonnet-4-5-20250929",
+            security_report=security_report
+        )
+
+        if dynamodb_success:
+            logger.info("Successfully saved reflection to DynamoDB")
+        else:
+            logger.error("Failed to save reflection to DynamoDB (continuing anyway)")
+
+
         # 6. Update history in S3 (for posterity)
         logger.info("Updating quote history...")
         tracker = QuoteTracker(bucket_name)
@@ -194,32 +249,61 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         tracker.save_history(history)
         logger.info(f"History updated. Total entries: {tracker.get_quote_count(history)}")
 
-        # 7. Format and send email
-        html_content = format_html_email(quote, attribution, reflection, theme_name)
-        plain_text = format_plain_text_email(quote, attribution, reflection)
+        # 7. Format and send emails to all users
         subject = create_email_subject(theme_name)
 
         logger.info("Sending emails...")
         success_count = 0
         failure_count = 0
 
-        for recipient in recipients:
+        for user in users:
             try:
+                user_email = user.get('email')
+                user_id = user.get('user_id', 'unknown')
+
+                if not user_email:
+                    logger.warning(f"User {user_id} has no email address, skipping")
+                    continue
+
+                # Generate magic link for this user
+                magic_link = generate_magic_link(
+                    user_id=user_id,
+                    email=user_email,
+                    date=current_date_str
+                )
+
+                # Format email with magic link and journaling prompt
+                html_content = format_html_email(
+                    quote,
+                    attribution,
+                    reflection,
+                    theme_name,
+                    journaling_prompt=journaling_prompt,
+                    magic_link=magic_link
+                )
+                plain_text = format_plain_text_email(
+                    quote,
+                    attribution,
+                    reflection,
+                    journaling_prompt=journaling_prompt
+                )
+
                 send_email_via_ses(
                     sender=sender_email,
-                    recipient=recipient,
+                    recipient=user_email,
                     subject=subject,
                     html_body=html_content,
                     text_body=plain_text,
                     region=aws_region
                 )
                 success_count += 1
-                logger.info(f"Successfully sent email to {recipient}")
+                logger.info(f"Successfully sent email to {user_email} (user_id: {user_id})")
 
             except Exception as e:
                 failure_count += 1
-                logger.error(f"Failed to send email to {recipient}: {e}")
-                # Continue with other recipients
+                user_email = user.get('email', 'unknown')
+                logger.error(f"Failed to send email to {user_email}: {e}")
+                # Continue with other users
 
         # 8. Return success
         logger.info(
