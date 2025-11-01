@@ -1,15 +1,15 @@
 """
-Main Lambda function handler for Daily Stoic Reflection service.
+Main Lambda function handler for Morning Reflection service.
 
 This is the entry point triggered daily by EventBridge to generate and send
-stoic reflections via email.
+morning reflections via email.
 """
 
 import json
 import logging
 import os
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import boto3
 from botocore.exceptions import ClientError
 
@@ -32,6 +32,54 @@ logger.setLevel(logging.INFO)
 # Initialize AWS clients
 ses_client = boto3.client('ses')
 s3_client = boto3.client('s3')
+secrets_client = boto3.client('secretsmanager')
+
+
+def get_anthropic_api_key() -> str:
+    """
+    Retrieve Anthropic API key from AWS Secrets Manager or environment variable.
+
+    Priority:
+    1. If ANTHROPIC_API_KEY_SECRET_NAME is set, fetch from Secrets Manager
+    2. Otherwise, use ANTHROPIC_API_KEY environment variable
+
+    Returns:
+        Anthropic API key string
+
+    Raises:
+        ValueError: If API key cannot be retrieved
+    """
+    secret_name = os.environ.get('ANTHROPIC_API_KEY_SECRET_NAME')
+
+    if secret_name:
+        # Fetch from Secrets Manager
+        try:
+            logger.info(f"Fetching Anthropic API key from Secrets Manager: {secret_name}")
+            response = secrets_client.get_secret_value(SecretId=secret_name)
+
+            # Secret can be stored as plain string or JSON
+            if 'SecretString' in response:
+                secret = response['SecretString']
+                # Try to parse as JSON first
+                try:
+                    secret_dict = json.loads(secret)
+                    # Look for common key names
+                    return secret_dict.get('api_key') or secret_dict.get('ANTHROPIC_API_KEY') or secret_dict.get('key')
+                except json.JSONDecodeError:
+                    # Secret is a plain string
+                    return secret
+            else:
+                raise ValueError("Secret does not contain SecretString")
+
+        except ClientError as e:
+            logger.error(f"Failed to retrieve secret from Secrets Manager: {e}")
+            raise ValueError(f"Could not retrieve API key from Secrets Manager: {e}")
+    else:
+        # Fall back to environment variable
+        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        if not api_key or api_key == 'MISSING_API_KEY':
+            raise ValueError("ANTHROPIC_API_KEY not set in environment")
+        return api_key
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -45,14 +93,16 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Returns:
         Response dictionary with status and message
     """
-    logger.info("Starting Daily Stoic Reflection generation")
+    logger.info("Starting Morning Reflection generation")
 
     try:
         # 1. Get environment variables
         bucket_name = os.environ.get('BUCKET_NAME')
         sender_email = os.environ.get('SENDER_EMAIL')
-        anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
         aws_region = os.environ.get('AWS_REGION', 'us-west-2')
+
+        # Get Anthropic API key (from Secrets Manager or environment)
+        anthropic_api_key = get_anthropic_api_key()
 
         # Validate environment variables
         if not all([bucket_name, sender_email, anthropic_api_key]):

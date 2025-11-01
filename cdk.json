@@ -20,9 +20,11 @@
     "@aws-cdk/core:target-partitions": ["aws"],
     "aws-cdk:enableDiffNoFail": "true",
     "@aws-cdk/core:stackRelativeExports": "true",
-    "anthropic_api_key": "REPLACE_WITH_YOUR_ANTHROPIC_API_KEY",
-    "sender_email": "reflections@jamescmooney.com",
-    "sender_domain": "jamescmooney.com",
-    "initial_recipient": "jamesmoon2@gmail.com"
+    "anthropic_api_key": "USE_SECRETS_MANAGER",
+    "sender_email": "reflections@morningreflection.com",
+    "sender_domain": "morningreflection.com",
+    "s3_bucket_prefix": "morningreflection-prod",
+    "project_name": "MorningReflection",
+    "environment": "prod"
   }
 }

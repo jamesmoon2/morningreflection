@@ -1,7 +1,7 @@
 """
-AWS CDK Stack definition for Daily Stoic Reflection service.
+AWS CDK Stack definition for Morning Reflection service.
 
-Defines all AWS infrastructure: Lambda, S3, EventBridge, and IAM permissions.
+Defines all AWS infrastructure: Lambda, S3, EventBridge, Secrets Manager, and IAM permissions.
 """
 
 from aws_cdk import (
@@ -16,13 +16,14 @@ from aws_cdk import (
     aws_logs as logs,
     aws_sns as sns,
     aws_sns_subscriptions as subscriptions,
+    aws_secretsmanager as secretsmanager,
     CfnOutput
 )
 from constructs import Construct
 
 
 class StoicStack(Stack):
-    """CDK Stack for Daily Stoic Reflection email service."""
+    """CDK Stack for Morning Reflection service."""
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -30,14 +31,30 @@ class StoicStack(Stack):
         # Get context values from cdk.json
         anthropic_api_key = self.node.try_get_context("anthropic_api_key")
         sender_email = self.node.try_get_context("sender_email")
+        s3_bucket_prefix = self.node.try_get_context("s3_bucket_prefix") or "morningreflection-prod"
 
-        if not anthropic_api_key or anthropic_api_key == "REPLACE_WITH_YOUR_ANTHROPIC_API_KEY":
-            print("WARNING: ANTHROPIC_API_KEY not set in cdk.json context")
+        # Check if we should use Secrets Manager for API key
+        use_secrets_manager = anthropic_api_key == "USE_SECRETS_MANAGER"
+
+        if use_secrets_manager:
+            print("INFO: Using AWS Secrets Manager for Anthropic API key")
+        elif not anthropic_api_key or anthropic_api_key == "REPLACE_WITH_YOUR_ANTHROPIC_API_KEY":
+            print("WARNING: ANTHROPIC_API_KEY not set. Set to 'USE_SECRETS_MANAGER' to use AWS Secrets Manager")
+
+        # ===== Secrets Manager for Anthropic API Key =====
+        # Create or reference the secret for Anthropic API key
+        api_key_secret = None
+        if use_secrets_manager:
+            # Reference existing secret (must be created manually first)
+            api_key_secret = secretsmanager.Secret.from_secret_name_v2(
+                self, "AnthropicApiKeySecret",
+                secret_name="morningreflection/anthropic-api-key"
+            )
 
         # ===== S3 Bucket for State Management =====
         bucket = s3.Bucket(
-            self, "StoicBucket",
-            bucket_name=None,  # Auto-generate unique name
+            self, "MorningReflectionBucket",
+            bucket_name=None,  # Auto-generate unique name with prefix
             versioned=True,  # Enable versioning for safety
             encryption=s3.BucketEncryption.S3_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
@@ -48,8 +65,8 @@ class StoicStack(Stack):
         # ===== SNS Topic for Security Alerts =====
         security_topic = sns.Topic(
             self, "SecurityAlertTopic",
-            topic_name="StoicReflections-SecurityAlerts",
-            display_name="Stoic Reflections Security Alerts",
+            topic_name="MorningReflection-SecurityAlerts",
+            display_name="Morning Reflection Security Alerts",
             fifo=False
         )
 
@@ -61,22 +78,30 @@ class StoicStack(Stack):
             )
 
         # ===== Lambda Function =====
+        # Build environment variables
+        lambda_env = {
+            "BUCKET_NAME": bucket.bucket_name,
+            "SENDER_EMAIL": sender_email or "reflections@morningreflection.com",
+            "SECURITY_ALERT_TOPIC_ARN": security_topic.topic_arn,
+        }
+
+        # Add API key from Secrets Manager or context
+        if use_secrets_manager and api_key_secret:
+            lambda_env["ANTHROPIC_API_KEY_SECRET_NAME"] = "morningreflection/anthropic-api-key"
+        else:
+            lambda_env["ANTHROPIC_API_KEY"] = anthropic_api_key or "MISSING_API_KEY"
+
         lambda_fn = lambda_.Function(
-            self, "DailyStoicSender",
-            function_name="DailyStoicSender",
+            self, "MorningReflectionSender",
+            function_name="MorningReflectionSender",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset("lambda"),
             timeout=Duration.seconds(60),
             memory_size=256,
-            environment={
-                "BUCKET_NAME": bucket.bucket_name,
-                "SENDER_EMAIL": sender_email or "reflections@jamescmooney.com",
-                "ANTHROPIC_API_KEY": anthropic_api_key or "MISSING_API_KEY",
-                "SECURITY_ALERT_TOPIC_ARN": security_topic.topic_arn,
-            },
+            environment=lambda_env,
             log_retention=logs.RetentionDays.ONE_WEEK,
-            description="Generates and sends daily stoic reflections via email"
+            description="Generates and sends daily morning reflections via email"
         )
 
         # Grant Lambda permissions to read/write S3 bucket
@@ -108,6 +133,10 @@ class StoicStack(Stack):
             )
         )
 
+        # Grant Lambda permissions to read from Secrets Manager if using it
+        if use_secrets_manager and api_key_secret:
+            api_key_secret.grant_read(lambda_fn)
+
         # ===== EventBridge Rule (Daily Trigger) =====
         # Schedule: 6 AM Pacific Time
         # PST (UTC-8): 6 AM PST = 14:00 UTC
@@ -117,8 +146,8 @@ class StoicStack(Stack):
 
         rule = events.Rule(
             self, "DailyTrigger",
-            rule_name="DailyStoicTrigger",
-            description="Triggers daily stoic reflection at 6 AM PT",
+            rule_name="MorningReflectionTrigger",
+            description="Triggers daily morning reflection at 6 AM PT",
             schedule=events.Schedule.cron(
                 minute="0",
                 hour="14",  # 6 AM PST / 7 AM PDT
