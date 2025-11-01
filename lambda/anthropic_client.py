@@ -2,13 +2,22 @@
 Anthropic API client for generating daily stoic reflections.
 
 Handles prompt construction, API calls to Claude, and response parsing.
+Includes comprehensive security controls for untrusted API output.
 """
 
 import json
 import logging
 import re
-from typing import Dict, List, Optional
+import os
+import time
+from typing import Dict, List, Optional, Tuple, Any
 from anthropic import Anthropic
+
+# Import security modules
+from security import SecurityValidator
+from output_validator import OutputValidator
+from security_alerting import SecurityAlertManager, Severity
+from security_logging import SecurityLogger, ContentRedactor
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -198,6 +207,8 @@ def generate_reflection_only(
     """
     Generate a reflection based on a provided quote.
 
+    DEPRECATED: Use generate_reflection_secure() instead for enhanced security.
+
     Args:
         quote: The stoic quote to reflect upon
         attribution: The quote's attribution (e.g., "Marcus Aurelius - Meditations 5.1")
@@ -207,6 +218,11 @@ def generate_reflection_only(
     Returns:
         The reflection text, or None if generation fails
     """
+    logger.warning(
+        "Using deprecated generate_reflection_only(). "
+        "Consider using generate_reflection_secure() for enhanced security controls."
+    )
+
     try:
         # Validate attribution format
         if not validate_attribution_format(attribution):
@@ -223,3 +239,314 @@ def generate_reflection_only(
     except Exception as e:
         logger.error(f"Failed to generate reflection: {e}")
         return None
+
+
+def generate_reflection_secure(
+    quote: str,
+    attribution: str,
+    theme: str,
+    api_key: str,
+    bucket_name: Optional[str] = None,
+    config_path: Optional[str] = None,
+    sns_topic_arn: Optional[str] = None
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """
+    Generate a reflection with comprehensive security controls.
+
+    This function provides defense-in-depth security for untrusted API output:
+    - Content sanitization
+    - Malicious pattern detection
+    - URL detection and blocking
+    - Size/DoS protection
+    - Statistical anomaly detection
+    - Security alerting and logging
+
+    Args:
+        quote: The stoic quote to reflect upon
+        attribution: The quote's attribution
+        theme: Monthly theme name
+        api_key: Anthropic API key
+        bucket_name: S3 bucket for logging/stats (optional)
+        config_path: Path to security config (optional)
+        sns_topic_arn: SNS topic for alerts (optional)
+
+    Returns:
+        Tuple of (sanitized_reflection_text_or_None, security_report_dict)
+
+    Security guarantees:
+        - All output is sanitized (HTML-escaped, control chars removed)
+        - Malicious patterns are blocked (XSS, scripts, etc.)
+        - URLs are detected and blocked by default
+        - Anomalous responses are flagged
+        - All security events are logged and alerted
+    """
+    start_time = time.time()
+
+    # Initialize security components
+    security_logger = SecurityLogger(
+        bucket_name=bucket_name,
+        correlation_id=None  # Will auto-generate
+    )
+
+    try:
+        # Load security configuration
+        if config_path is None:
+            # Try multiple paths
+            for path in ['/var/task/config/security_config.json',
+                        './config/security_config.json',
+                        '../config/security_config.json']:
+                if os.path.exists(path):
+                    config_path = path
+                    break
+
+        # Initialize security validator
+        security_validator = SecurityValidator(config_path)
+        config = security_validator.config.config
+
+        # Initialize alert manager
+        alert_manager = SecurityAlertManager(
+            config=config,
+            sns_topic_arn=sns_topic_arn
+        )
+
+        # Initialize output validator
+        output_validator = None
+        if bucket_name and config.get('anomaly_detection', {}).get('enabled', True):
+            output_validator = OutputValidator(bucket_name, config)
+
+        logger.info(
+            f"[{security_logger.correlation_id}] Starting secure reflection generation"
+        )
+
+        # Validate inputs (defense in depth - even though we control inputs)
+        if not quote or not attribution or not theme:
+            raise ValueError("Missing required input parameters")
+
+        # Validate attribution format
+        if not validate_attribution_format(attribution):
+            logger.warning(f"Attribution format may be unusual: {attribution}")
+
+        # Build prompt and call API
+        prompt = build_reflection_prompt(quote, attribution, theme)
+
+        logger.info("Calling Anthropic API...")
+        raw_reflection = call_anthropic_api(prompt, api_key)
+
+        if not raw_reflection:
+            raise ValueError("API returned empty reflection")
+
+        # Hash content for tracking
+        content_hash = ContentRedactor.hash_content(raw_reflection)
+        security_logger.log_validation_start('reflection', content_hash)
+
+        logger.info("Starting security validation...")
+
+        # 1. Core Security Validation & Sanitization
+        is_safe, sanitized_reflection, check_results = \
+            security_validator.validate_and_sanitize(
+                raw_reflection,
+                content_type='reflection'
+            )
+
+        # Log each security check
+        for result in check_results:
+            security_logger.log_security_check(
+                check_name=result.check_name,
+                passed=result.passed,
+                severity=result.severity,
+                details={
+                    'message': result.details,
+                    'blocked_patterns': result.blocked_patterns
+                }
+            )
+
+        # Log sanitization
+        if len(raw_reflection) != len(sanitized_reflection):
+            modifications = ['Content sanitized']
+            security_logger.log_sanitization(
+                modifications=modifications,
+                original_length=len(raw_reflection),
+                sanitized_length=len(sanitized_reflection)
+            )
+
+        # Alert on critical failures
+        critical_failures = [r for r in check_results
+                           if not r.passed and r.severity == 'CRITICAL']
+
+        for failure in critical_failures:
+            alert_manager.alert_blocked_content(
+                check_name=failure.check_name,
+                reason=failure.details,
+                blocked_patterns=failure.blocked_patterns
+            )
+            security_logger.log_security_incident(
+                incident_type='blocked_content',
+                severity='CRITICAL',
+                description=f"Security check failed: {failure.check_name}",
+                evidence={
+                    'check': failure.check_name,
+                    'details': failure.details,
+                    'patterns': failure.blocked_patterns
+                }
+            )
+
+        # Alert on warnings
+        warning_failures = [r for r in check_results
+                          if not r.passed and r.severity == 'WARNING']
+
+        for warning in warning_failures:
+            alert_manager.alert_suspicious_content(
+                check_name=warning.check_name,
+                reason=warning.details,
+                patterns=warning.blocked_patterns
+            )
+
+        # Check if content is safe to use
+        if not is_safe:
+            logger.error(
+                "SECURITY VIOLATION: Content failed security validation. "
+                "Content has been REJECTED."
+            )
+
+            # Create security report
+            duration_ms = (time.time() - start_time) * 1000
+            security_logger.log_validation_complete(
+                passed=False,
+                duration_ms=duration_ms,
+                checks_performed=len(check_results),
+                issues=[r.details for r in check_results if not r.passed]
+            )
+
+            # Save audit log
+            security_logger.save_audit_log_to_s3()
+
+            # Publish metrics
+            alert_manager.publish_validation_metrics(
+                passed=False,
+                duration_ms=duration_ms,
+                checks_performed=len(check_results)
+            )
+
+            return None, {
+                'success': False,
+                'security_status': 'REJECTED',
+                'reason': 'Failed security validation',
+                'check_results': [
+                    {
+                        'check': r.check_name,
+                        'passed': r.passed,
+                        'severity': r.severity,
+                        'details': r.details
+                    }
+                    for r in check_results
+                ],
+                'correlation_id': security_logger.correlation_id,
+                'alert_summary': alert_manager.get_alert_summary()
+            }
+
+        # 2. Advanced Output Validation (anomaly detection, content policy)
+        validation_issues = []
+
+        if output_validator:
+            logger.info("Performing advanced output validation...")
+            is_valid, validation_results = output_validator.validate(
+                sanitized_reflection,
+                check_anomalies=True
+            )
+
+            # Log anomaly detection
+            if validation_results.get('anomaly_detection'):
+                anomaly_info = validation_results['anomaly_detection']
+                if anomaly_info.get('is_anomaly'):
+                    security_logger.log_anomaly_detection(
+                        is_anomaly=True,
+                        anomaly_score=anomaly_info.get('anomaly_score', 0.0),
+                        anomalies=anomaly_info.get('anomalies', [])
+                    )
+
+                    alert_manager.alert_anomaly_detected(
+                        anomalies=anomaly_info.get('anomalies', []),
+                        anomaly_score=anomaly_info.get('anomaly_score', 0.0)
+                    )
+
+            # Collect validation issues
+            if not is_valid:
+                validation_issues.extend(
+                    validation_results.get('issues', [])
+                )
+
+            if validation_issues:
+                alert_manager.alert_validation_failure(
+                    reason='; '.join(validation_issues),
+                    validation_results=validation_results
+                )
+
+        # 3. Complete validation logging
+        duration_ms = (time.time() - start_time) * 1000
+        all_issues = [r.details for r in check_results if not r.passed] + validation_issues
+
+        security_logger.log_validation_complete(
+            passed=True,  # Passed security checks, warnings are OK
+            duration_ms=duration_ms,
+            checks_performed=len(check_results) + (1 if output_validator else 0),
+            issues=all_issues
+        )
+
+        # Save audit log to S3
+        security_logger.save_audit_log_to_s3()
+
+        # Publish metrics
+        alert_manager.publish_validation_metrics(
+            passed=True,
+            duration_ms=duration_ms,
+            checks_performed=len(check_results)
+        )
+
+        # 4. Return sanitized, validated content
+        logger.info(
+            f"[{security_logger.correlation_id}] "
+            f"Security validation PASSED ({duration_ms:.2f}ms)"
+        )
+
+        return sanitized_reflection, {
+            'success': True,
+            'security_status': 'PASSED',
+            'sanitized': len(raw_reflection) != len(sanitized_reflection),
+            'validation_duration_ms': duration_ms,
+            'checks_performed': len(check_results),
+            'check_results': [
+                {
+                    'check': r.check_name,
+                    'passed': r.passed,
+                    'severity': r.severity,
+                    'details': r.details
+                }
+                for r in check_results
+            ],
+            'validation_results': validation_results if output_validator else None,
+            'correlation_id': security_logger.correlation_id,
+            'alert_summary': alert_manager.get_alert_summary()
+        }
+
+    except Exception as e:
+        logger.error(
+            f"[{security_logger.correlation_id}] "
+            f"Error in secure reflection generation: {e}",
+            exc_info=True
+        )
+
+        security_logger.log_security_incident(
+            incident_type='generation_error',
+            severity='CRITICAL',
+            description=f"Failed to generate reflection: {str(e)}",
+            evidence={'error': str(e)}
+        )
+
+        security_logger.save_audit_log_to_s3()
+
+        return None, {
+            'success': False,
+            'security_status': 'ERROR',
+            'error': str(e),
+            'correlation_id': security_logger.correlation_id
+        }

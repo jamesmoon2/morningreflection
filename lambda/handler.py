@@ -23,7 +23,7 @@ from email_formatter import (
     create_email_subject,
     validate_email_content
 )
-from anthropic_client import generate_reflection_only
+from anthropic_client import generate_reflection_only, generate_reflection_secure
 
 # Configure logging
 logger = logging.getLogger()
@@ -90,19 +90,40 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if not recipients:
             raise ValueError("No recipients configured")
 
-        # 5. Generate reflection via Anthropic API
-        logger.info("Generating reflection via Anthropic API...")
-        reflection = generate_reflection_only(
+        # 5. Generate reflection via Anthropic API with security controls
+        logger.info("Generating reflection via Anthropic API (with security controls)...")
+
+        # Get optional SNS topic for security alerts
+        sns_topic_arn = os.environ.get('SECURITY_ALERT_TOPIC_ARN')
+
+        # Use secure generation with comprehensive security controls
+        reflection, security_report = generate_reflection_secure(
             quote=quote,
             attribution=attribution,
             theme=theme_name,
-            api_key=anthropic_api_key
+            api_key=anthropic_api_key,
+            bucket_name=bucket_name,
+            config_path=None,  # Will auto-detect
+            sns_topic_arn=sns_topic_arn
+        )
+
+        # Log security report summary
+        logger.info(
+            f"Security validation: {security_report.get('security_status')} "
+            f"(correlation_id: {security_report.get('correlation_id')})"
         )
 
         if not reflection:
-            raise Exception("Failed to generate reflection from Anthropic API")
+            error_reason = security_report.get('reason', 'Unknown error')
+            raise Exception(
+                f"Failed to generate reflection: {error_reason}. "
+                f"Correlation ID: {security_report.get('correlation_id')}"
+            )
 
-        logger.info(f"Generated reflection ({len(reflection)} chars)")
+        logger.info(
+            f"Generated reflection ({len(reflection)} chars) "
+            f"[{security_report.get('checks_performed', 0)} security checks passed]"
+        )
 
         # Validate content
         validation = validate_email_content(quote, attribution, reflection)
