@@ -1,12 +1,16 @@
 # AWS CDK
 aws-cdk-lib>=2.100.0
 constructs>=10.0.0
+aws-cdk.aws-amplify-alpha>=2.100.0a0
 
 # AWS SDK
 boto3>=1.28.0
 
 # Anthropic API
 anthropic>=0.18.0
+
+# JWT for magic links
+PyJWT>=2.8.0
 
 # Testing
 pytest>=7.4.0

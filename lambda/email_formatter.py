@@ -8,7 +8,14 @@ import html
 from typing import Dict
 
 
-def format_html_email(quote: str, attribution: str, reflection: str, theme: str) -> str:
+def format_html_email(
+    quote: str,
+    attribution: str,
+    reflection: str,
+    theme: str,
+    journaling_prompt: str = "",
+    magic_link: str = ""
+) -> str:
     """
     Format the daily reflection as an HTML email.
 
@@ -17,6 +24,8 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
         attribution: Quote attribution (e.g., "Marcus Aurelius - Meditations 4.3")
         reflection: The reflection text (250-450 words)
         theme: Monthly theme name
+        journaling_prompt: Journaling prompt (optional, Phase 3)
+        magic_link: Magic link URL for web app access (optional, Phase 3)
 
     Returns:
         Complete HTML email as a string
@@ -25,6 +34,7 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
     quote_safe = html.escape(quote)
     attribution_safe = html.escape(attribution)
     theme_safe = html.escape(theme)
+    journaling_prompt_safe = html.escape(journaling_prompt) if journaling_prompt else ""
 
     # Format reflection with paragraphs
     reflection_html = format_reflection_paragraphs(reflection)
@@ -91,6 +101,40 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
         .reflection p {{
             margin-bottom: 15px;
         }}
+        .journaling-prompt {{
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            border-radius: 4px;
+        }}
+        .journaling-prompt h3 {{
+            margin: 0 0 10px 0;
+            color: #856404;
+            font-size: 16px;
+        }}
+        .journaling-prompt p {{
+            margin: 0;
+            color: #856404;
+            font-size: 14px;
+        }}
+        .cta-button {{
+            margin-top: 30px;
+            text-align: center;
+        }}
+        .cta-button a {{
+            display: inline-block;
+            padding: 15px 30px;
+            background-color: #3498db;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+        }}
+        .cta-button a:hover {{
+            background-color: #2980b9;
+        }}
         .footer {{
             margin-top: 40px;
             padding-top: 20px;
@@ -104,7 +148,7 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
 <body>
     <div class="container">
         <div class="header">
-            <h1>Daily Stoic Reflection</h1>
+            <h1>Morning Reflection</h1>
             <div class="theme">{theme_safe}</div>
         </div>
 
@@ -117,8 +161,21 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
             {reflection_html}
         </div>
 
+        {f'''
+        <div class="journaling-prompt">
+            <h3>📝 Today's Journaling Prompt</h3>
+            <p>{journaling_prompt_safe}</p>
+        </div>
+        ''' if journaling_prompt else ''}
+
+        {f'''
+        <div class="cta-button">
+            <a href="{magic_link}">Read & Journal Online</a>
+        </div>
+        ''' if magic_link else ''}
+
         <div class="footer">
-            Daily Stoic Reflection • Powered by Claude
+            Morning Reflection • Powered by Claude
         </div>
     </div>
 </body>
@@ -127,7 +184,12 @@ def format_html_email(quote: str, attribution: str, reflection: str, theme: str)
     return html_template
 
 
-def format_plain_text_email(quote: str, attribution: str, reflection: str) -> str:
+def format_plain_text_email(
+    quote: str,
+    attribution: str,
+    reflection: str,
+    journaling_prompt: str = ""
+) -> str:
     """
     Format the daily reflection as plain text email (fallback).
 
@@ -135,6 +197,7 @@ def format_plain_text_email(quote: str, attribution: str, reflection: str) -> st
         quote: The stoic quote text
         attribution: Quote attribution
         reflection: The reflection text
+        journaling_prompt: Journaling prompt (optional, Phase 3)
 
     Returns:
         Plain text email as a string
@@ -143,7 +206,7 @@ def format_plain_text_email(quote: str, attribution: str, reflection: str) -> st
 
     plain_text = f"""
 {divider}
-DAILY STOIC REFLECTION
+MORNING REFLECTION
 {divider}
 
 "{quote}"
@@ -154,8 +217,16 @@ DAILY STOIC REFLECTION
 
 {reflection}
 
+{f'''
 {divider}
-Daily Stoic Reflection • Powered by Claude
+📝 Today's Journaling Prompt
+{divider}
+
+{journaling_prompt}
+
+''' if journaling_prompt else ''}
+{divider}
+Morning Reflection • Powered by Claude
 """
 
     return plain_text.strip()
